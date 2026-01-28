@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: hugogsilva/finder-postgres:latest
+    environment:
+      - POSTGRES_DB=guild_monitor
+      - POSTGRES_USER=guild_monitor_user
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-secure_password_change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - network_swarm_public
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guild_monitor_user -d guild_monitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - network_swarm_public
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  backend:
+    image: hugogsilva/finder-backend:latest
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://guild_monitor_user:${DB_PASSWORD:-secure_password_change_me}@postgres:5432/guild_monitor
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-your_jwt_secret_change_me}
+      - PORT=4000
+      - CORS_ORIGIN=https://finder.hugogsilva.dev
+    networks:
+      - network_swarm_public
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 10
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+      labels:
+        # Traefik - API Backend
+        - traefik.enable=true
+        - traefik.http.routers.finder-api.rule=Host(`finder.hugogsilva.dev`) && PathPrefix(`/api`)
+        - traefik.http.routers.finder-api.entrypoints=websecure
+        - traefik.http.routers.finder-api.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.finder-api.service=finder-api
+        - traefik.http.services.finder-api.loadbalancer.server.port=4000
+        # Traefik - WebSocket
+        - traefik.http.routers.finder-ws.rule=Host(`finder.hugogsilva.dev`) && PathPrefix(`/ws`)
+        - traefik.http.routers.finder-ws.entrypoints=websecure
+        - traefik.http.routers.finder-ws.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.finder-ws.service=finder-ws
+        - traefik.http.services.finder-ws.loadbalancer.server.port=4000
+
+  scraper:
+    image: hugogsilva/finder-scraper:latest
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://guild_monitor_user:${DB_PASSWORD:-secure_password_change_me}@postgres:5432/guild_monitor
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - network_swarm_public
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 10
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Discord bot - Descomente quando tiver o token configurado
+  # discord-bot:
+  #   image: hugogsilva/finder-discord:latest
+  #   environment:
+  #     - NODE_ENV=production
+  #     - DATABASE_URL=postgresql://guild_monitor_user:${DB_PASSWORD:-secure_password_change_me}@postgres:5432/guild_monitor
+  #     - REDIS_URL=redis://redis:6379
+  #     - DISCORD_TOKEN=${DISCORD_TOKEN:-your_discord_token_here}
+  #   networks:
+  #     - network_swarm_public
+  #   deploy:
+  #     replicas: 1
+  #     update_config:
+  #       parallelism: 1
+  #       delay: 10s
+  #       order: start-first
+  #     restart_policy:
+  #       condition: on-failure
+  #       delay: 5s
+  #       max_attempts: 3
+  #     resources:
+  #       limits:
+  #         cpus: '0.25'
+  #         memory: 256M
+
+  frontend:
+    image: hugogsilva/finder-frontend:latest
+    networks:
+      - network_swarm_public
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+      labels:
+        # Traefik - Frontend (catch-all para o domínio)
+        - traefik.enable=true
+        - traefik.http.routers.finder-frontend.rule=Host(`finder.hugogsilva.dev`)
+        - traefik.http.routers.finder-frontend.entrypoints=websecure
+        - traefik.http.routers.finder-frontend.priority=1
+        - traefik.http.routers.finder-frontend.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.finder-frontend.service=finder-frontend
+        - traefik.http.services.finder-frontend.loadbalancer.server.port=80
+
+networks:
+  network_swarm_public:
+    external: true
+
+volumes:
+  postgres_data:
+    driver: local

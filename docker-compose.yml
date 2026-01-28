@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: guild-monitor-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-guild_monitor}
+      POSTGRES_USER: ${DB_USER:-guild_monitor_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_here}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - guild-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-guild_monitor_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: guild-monitor-redis
+    volumes:
+      - redis_data:/data
+    networks:
+      - guild-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: guild-monitor-backend
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-guild_monitor_user}:${DB_PASSWORD:-secure_password_here}@postgres:5432/${DB_NAME:-guild_monitor}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret_here}
+      PORT: 4000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - guild-network
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+
+  scraper:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    container_name: guild-monitor-scraper
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-guild_monitor_user}:${DB_PASSWORD:-secure_password_here}@postgres:5432/${DB_NAME:-guild_monitor}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - guild-network
+    restart: unless-stopped
+
+  discord-bot:
+    build:
+      context: ./discord-bot
+      dockerfile: Dockerfile
+    container_name: guild-monitor-discord
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-guild_monitor_user}:${DB_PASSWORD:-secure_password_here}@postgres:5432/${DB_NAME:-guild_monitor}
+      REDIS_URL: redis://redis:6379
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-your_discord_bot_token_here}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - guild-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${API_URL:-http://localhost/api}
+        VITE_WS_URL: ${WS_URL:-ws://localhost/ws}
+    container_name: guild-monitor-frontend
+    networks:
+      - guild-network
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: guild-monitor-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - guild-network
+    restart: unless-stopped
+
+networks:
+  guild-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
